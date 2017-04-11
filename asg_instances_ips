@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+
+require 'JSON'
+require 'optparse'
+
+def asg_instances_ips profile='default'
+  # Get auto scaling groups
+  data = JSON.load(`aws --profile #{profile} autoscaling describe-auto-scaling-groups`)
+  exit -1 unless $?.success?
+
+  asgs = data["AutoScalingGroups"].map do |asg|
+    {
+      "name" => asg["AutoScalingGroupName"],
+      "instances" => asg["Instances"].map{|i| i["InstanceId"]}
+    }
+  end
+
+  # Get instance ips
+  ids = asgs.map {|asg| asg["instances"]}.flatten
+  data = JSON.load(`aws --profile #{profile} ec2 describe-instances --instance-ids #{ids.join(' ')}`)
+  exit -1 unless $?.success?
+
+  instance_ips = data["Reservations"].map do |reservation|
+    instances = reservation["Instances"].map do |instance|
+      [instance["InstanceId"], instance["PrivateIpAddress"]]
+    end
+    instances.flatten(1)
+  end
+  ips = Hash[instance_ips]
+
+  # Return a hash of auto scaling groups with instance ips
+  asg_ips = asgs.map do |asg|
+    [asg["name"], asg["instances"].map{|i| ips[i]}]
+  end
+  Hash[asg_ips.select{|name, instances| instances.any?}]
+end
+
+options = OptionParser.new do |opts|
+  opts.banner = "Usage: #{opts.program_name} [options]\nOptions:"
+  opts.on("--profile <profile>", String, "AWS profile") do |p|
+    profile = p
+  end
+end
+
+begin
+  options.parse(ARGV)
+rescue => e
+  puts options
+  exit -1
+end
+
+asg_instances_ips(options.getopts["profile"] || "default").each do |name, ips|
+  puts "#{name}: #{ips.join(', ')}"
+end
